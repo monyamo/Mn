@@ -20,6 +20,7 @@ NEWS_KEY       = os.environ.get("NEWS_API_KEY", "")
 
 
 ODESSA_REGION_ID = 16
+ADMIN_ID = 5604371596  # ID админа
 
 genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel(
@@ -37,6 +38,17 @@ user_notes: dict = {}
 all_users: set = set()
 last_alert_status: dict = {"active": None}
 user_settings: dict = {}  # {uid: {"alert": True, "events": True}}
+broadcast_state: dict = {}  # {uid: {"mode": "all"/"user", "target": uid}}
+
+ADMIN_MENU = ReplyKeyboardMarkup(
+    [
+        ["📢 Рассылка всем"],
+        ["👤 Написать пользователю"],
+        ["👥 Список пользователей"],
+        ["🔙 Назад"],
+    ],
+    resize_keyboard=True,
+)
 
 def get_settings(uid: int) -> dict:
     if uid not in user_settings:
@@ -811,6 +823,86 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         reminder_state[uid]["step"] = "year"
         await update.message.reply_text("📅 Выбери год:", reply_markup=kb_years())
         return
+
+    # Админка
+    if text == "👑 Админка":
+        if uid != ADMIN_ID:
+            await update.message.reply_text("❌ Доступ запрещён.", reply_markup=MAIN_MENU)
+            return
+        await update.message.reply_text(
+            f"👑 Админка\n\nПользователей в боте: {len(all_users)}",
+            reply_markup=ADMIN_MENU
+        )
+        return
+
+    if text == "📢 Рассылка всем" and uid == ADMIN_ID:
+        broadcast_state[uid] = {"mode": "all"}
+        await update.message.reply_text(
+            "📢 Напиши сообщение для рассылки всем пользователям:",
+            reply_markup=ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+        )
+        return
+
+    if text == "👤 Написать пользователю" and uid == ADMIN_ID:
+        broadcast_state[uid] = {"mode": "user"}
+        await update.message.reply_text(
+            "👤 Напиши ID пользователя которому хочешь написать:",
+            reply_markup=ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+        )
+        return
+
+    if text == "👥 Список пользователей" and uid == ADMIN_ID:
+        users_list = "\n".join([str(u) for u in all_users])
+        await update.message.reply_text(
+            f"👥 Все пользователи ({len(all_users)}):\n\n{users_list}",
+            reply_markup=ADMIN_MENU
+        )
+        return
+
+    if text == "❌ Отмена" and uid == ADMIN_ID:
+        broadcast_state.pop(uid, None)
+        await update.message.reply_text("❌ Отменено.", reply_markup=get_main_menu(uid))
+        return
+
+    if text == "🔙 Назад" and uid == ADMIN_ID:
+        broadcast_state.pop(uid, None)
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_menu(uid))
+        return
+
+    # Обработка рассылки
+    if uid == ADMIN_ID and uid in broadcast_state:
+        state = broadcast_state[uid]
+        if state["mode"] == "all":
+            broadcast_state.pop(uid, None)
+            count = 0
+            for target_uid in list(all_users):
+                try:
+                    await ctx.bot.send_message(chat_id=target_uid, text=f"📢 Сообщение от администратора:\n\n{text}")
+                    count += 1
+                except Exception:
+                    pass
+            await update.message.reply_text(f"✅ Отправлено {count} пользователям!", reply_markup=get_main_menu(uid))
+            return
+        elif state["mode"] == "user" and "target" not in state:
+            try:
+                target = int(text)
+                broadcast_state[uid]["target"] = target
+                await update.message.reply_text(
+                    f"👤 Напиши сообщение для пользователя {target}:",
+                    reply_markup=ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+                )
+            except ValueError:
+                await update.message.reply_text("❌ Неверный ID! Введи числовой ID пользователя.")
+            return
+        elif state["mode"] == "user" and "target" in state:
+            target = state["target"]
+            broadcast_state.pop(uid, None)
+            try:
+                await ctx.bot.send_message(chat_id=target, text=f"📢 Сообщение от администратора:\n\n{text}")
+                await update.message.reply_text(f"✅ Сообщение отправлено пользователю {target}!", reply_markup=get_main_menu(uid))
+            except Exception:
+                await update.message.reply_text(f"❌ Не удалось отправить сообщение пользователю {target}.", reply_markup=get_main_menu(uid))
+            return
 
     # Погода
     if text == "🌤 Погода":
