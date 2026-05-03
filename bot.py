@@ -44,6 +44,26 @@ def get_settings(uid: int) -> dict:
         user_settings[uid] = {"alert": True, "events": True}
     return user_settings[uid]
 
+
+# ─── Районы Одессы ───────────────────────────────────────────────────────────
+ODESSA_DISTRICTS = {
+    "🏙 Центр":        "Odessa Center,UA",
+    "🌊 Приморский":   "Odessa,UA",
+    "🏘 Суворовский":  "Suvorovskyi,Odessa,UA",
+    "🏭 Малиновский":  "Malinovskyi,Odessa,UA",
+    "🌿 Киевский":     "Kyivskyi,Odessa,UA",
+    "🌳 Черёмушки":    "Cheremushki,Odessa,UA",
+    "🏖 Аркадия":      "Arkadia,Odessa,UA",
+    "🏡 Таирова":      "Tairova,Odessa,UA",
+    "🏗 Котовского":   "Kotovskogo,Odessa,UA",
+    "🚢 Пересыпь":     "Peresyp,Odessa,UA",
+    "🌾 Слободка":     "Slobodka,Odessa,UA",
+    "🏄 Лузановка":    "Luzanovka,Odessa,UA",
+}
+
+# Сохранённый район пользователя
+user_district: dict = {}  # {uid: название района}
+
 # Фиксированные сабантуи
 FIXED_EVENTS = [
     (1, 1,  "🎆 Новый год"),
@@ -58,7 +78,6 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["🌤 Погода",        "🚨 Тревога Одесса"],
         ["🎉 График сабантуев"],
         ["🔔 Напоминания"],
-        ["❓ Спросить AI"],
         ["⚙️ Настройки",    "📖 Инструкция"],
     ],
     resize_keyboard=True,
@@ -74,6 +93,19 @@ REMINDERS_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+
+def districts_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            ["🏙 Центр",       "🌊 Приморский",  "🏘 Суворовский"],
+            ["🏭 Малиновский", "🌿 Киевский",    "🌳 Черёмушки"],
+            ["🏖 Аркадия",     "🏡 Таирова",     "🏗 Котовского"],
+            ["🚢 Пересыпь",    "🌾 Слободка",    "🏄 Лузановка"],
+            ["🔙 Назад"],
+        ],
+        resize_keyboard=True,
+    )
+
 def settings_keyboard(uid: int) -> InlineKeyboardMarkup:
     s = get_settings(uid)
     alert_icon  = "🔔" if s["alert"]  else "🔕"
@@ -81,6 +113,7 @@ def settings_keyboard(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{alert_icon} Тревога Одесса", callback_data="toggle_alert")],
         [InlineKeyboardButton(f"{events_icon} Сабантуи",      callback_data="toggle_events")],
+        [InlineKeyboardButton("🏙 Изменить район погоды",     callback_data="change_district")],
     ])
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -459,6 +492,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     await query.answer()
 
     # ── Настройки ──────────────────────────────────────────────────────────
+    if data == "change_district":
+        await query.edit_message_text("Выбери район в меню!")
+        await query.message.reply_text(
+            "🏙 Выбери новый район:",
+            reply_markup=districts_keyboard()
+        )
+        return
+
     if data in ("toggle_alert", "toggle_events"):
         s = get_settings(uid)
         if data == "toggle_alert":
@@ -647,12 +688,21 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         s = get_settings(uid)
         alert_status  = "включены ✅" if s["alert"]  else "выключены ❌"
         events_status = "включены ✅" if s["events"] else "выключены ❌"
+        district = user_district.get(uid, "не выбран")
         await update.message.reply_text(
-            f"⚙️ Настройки уведомлений:\n\n"
+            f"⚙️ Настройки:\n\n"
             f"🚨 Тревога Одесса: {alert_status}\n"
-            f"🎉 Сабантуи: {events_status}\n\n"
-            "Нажми кнопку чтобы включить/выключить:",
+            f"🎉 Сабантуи: {events_status}\n"
+            f"🏙 Район погоды: {district}\n\n"
+            "Нажми кнопку чтобы изменить:",
             reply_markup=settings_keyboard(uid),
+        ); return
+
+    # Смена района из настроек
+    if text == "🏙 Изменить район":
+        await update.message.reply_text(
+            "🏙 Выбери новый район:",
+            reply_markup=districts_keyboard()
         ); return
 
     # Напоминания — главная кнопка
@@ -704,14 +754,27 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("📅 Выбери год:", reply_markup=kb_years())
         return
 
-    if text == "❓ Спросить AI":
-        await update.message.reply_text("💬 Напиши свой вопрос!", reply_markup=MAIN_MENU); return
-
     # Погода
-    if text == "🌤 Погода" or lower.startswith("погода"):
-        city = text.replace("🌤 Погода", "").replace("погода", "").strip() or "Одесса"
+    if text == "🌤 Погода":
+        uid_district = user_district.get(uid)
+        if uid_district:
+            await update.message.reply_text("⏳ Получаю данные...")
+            city = ODESSA_DISTRICTS.get(uid_district, "Odessa,UA")
+            await update.message.reply_text(await get_weather(city), reply_markup=MAIN_MENU)
+        else:
+            await update.message.reply_text(
+                "🏙 Выбери свой район Одессы:",
+                reply_markup=districts_keyboard()
+            )
+        return
+
+    # Выбор района
+    if text in ODESSA_DISTRICTS:
+        user_district[uid] = text
         await update.message.reply_text("⏳ Получаю данные...")
-        await update.message.reply_text(await get_weather(city), reply_markup=MAIN_MENU); return
+        city = ODESSA_DISTRICTS[text]
+        await update.message.reply_text(await get_weather(city), reply_markup=MAIN_MENU)
+        return
 
     # Новости
     if lower.startswith("новости"):
