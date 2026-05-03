@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
 GEMINI_KEY     = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
 ALERTS_TOKEN   = os.environ.get("ALERTS_TOKEN", "")
-WEATHER_KEY    = os.environ.get("OPENWEATHER_API_KEY", "")
 NEWS_KEY       = os.environ.get("NEWS_API_KEY", "")
 
 
@@ -140,22 +139,76 @@ async def download_file(file_url: str) -> bytes:
         r = await client.get(file_url, timeout=30)
     return r.content
 
-async def get_weather(city: str) -> str:
-    if not WEATHER_KEY:
-        return "⚠️ OPENWEATHER_API_KEY не настроен.\nhttps://openweathermap.org/api"
-    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_KEY}&units=metric&lang=ru"
+# Районы Одессы с координатами
+ODESSA_DISTRICTS = {
+    "🏙 Центр":         (46.4825, 30.7233),
+    "🌊 Приморский":    (46.4775, 30.7350),
+    "🏘 Суворовский":   (46.5200, 30.7600),
+    "🏭 Малиновский":   (46.4900, 30.6900),
+    "🌿 Киевский":      (46.4600, 30.6500),
+    "🌳 Черёмушки":     (46.4300, 30.6700),
+    "🏖 Аркадия":       (46.4150, 30.7450),
+    "🏡 Таирова":       (46.4100, 30.6800),
+    "🏗 Котовского":    (46.4700, 30.6200),
+    "🚢 Пересыпь":      (46.5100, 30.7100),
+    "🌾 Слободка":      (46.5000, 30.6800),
+    "🏄 Лузановка":     (46.5400, 30.7200),
+}
+
+user_district: dict = {}
+
+WMO_CODES = {
+    0: "☀️ Ясно", 1: "🌤 Преимущественно ясно", 2: "⛅ Переменная облачность",
+    3: "☁️ Пасмурно", 45: "🌫 Туман", 48: "🌫 Гололёд",
+    51: "🌦 Лёгкая морось", 53: "🌦 Морось", 55: "🌧 Сильная морось",
+    61: "🌧 Лёгкий дождь", 63: "🌧 Дождь", 65: "🌧 Сильный дождь",
+    71: "❄️ Лёгкий снег", 73: "❄️ Снег", 75: "❄️ Сильный снег",
+    80: "🌦 Ливень", 81: "🌧 Сильный ливень", 82: "⛈ Очень сильный ливень",
+    95: "⛈ Гроза", 96: "⛈ Гроза с градом", 99: "⛈ Сильная гроза с градом",
+}
+
+def districts_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            ["🏙 Центр",       "🌊 Приморский",  "🏘 Суворовский"],
+            ["🏭 Малиновский", "🌿 Киевский",    "🌳 Черёмушки"],
+            ["🏖 Аркадия",     "🏡 Таирова",     "🏗 Котовского"],
+            ["🚢 Пересыпь",    "🌾 Слободка",    "🏄 Лузановка"],
+            ["🔙 Назад"],
+        ],
+        resize_keyboard=True,
+    )
+
+async def get_weather(lat: float, lon: float, district_name: str) -> str:
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        f"&current=temperature_2m,apparent_temperature,weathercode,"
+        f"windspeed_10m,relativehumidity_2m,precipitation"
+        f"&timezone=Europe/Kiev"
+    )
     async with httpx.AsyncClient() as client:
         r = await client.get(url, timeout=10)
     if r.status_code != 200:
-        return f"❌ Город «{city}» не найден."
-    d = r.json()
-    return (
-        f"🌤 Погода в {d['name']}\n\n"
-        f"🌡 {round(d['main']['temp'])}°C (ощущается {round(d['main']['feels_like'])}°C)\n"
-        f"☁️ {d['weather'][0]['description'].capitalize()}\n"
-        f"💧 Влажность: {d['main']['humidity']}%\n"
-        f"💨 Ветер: {round(d['wind']['speed'])} м/с"
+        return "❌ Не удалось получить данные о погоде."
+    d = r.json()["current"]
+    code = d.get("weathercode", 0)
+    desc = WMO_CODES.get(code, "☁️ Облачно")
+    temp = round(d["temperature_2m"])
+    feels = round(d["apparent_temperature"])
+    hum = d["relativehumidity_2m"]
+    wind = round(d["windspeed_10m"] / 3.6)  # км/ч → м/с
+    precip = d["precipitation"]
+    result = (
+        f"🌤 Погода — {district_name}\n\n"
+        f"🌡 {temp}°C (ощущается {feels}°C)\n"
+        f"{desc}\n"
+        f"💧 Влажность: {hum}%\n"
+        f"💨 Ветер: {wind} м/с"
     )
+    if precip > 0:
+        result += f"\n🌧 Осадки: {precip} мм"
+    return result
 
 async def get_news(topic: str = "") -> str:
     if not NEWS_KEY:
@@ -500,6 +553,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    if data == "change_district":
+        await query.edit_message_text("Выбери район:")
+        await query.message.reply_text("🏙 Выбери район:", reply_markup=districts_keyboard())
+        return
+
     if data in ("toggle_alert", "toggle_events"):
         s = get_settings(uid)
         if data == "toggle_alert":
@@ -757,23 +815,25 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     # Погода
     if text == "🌤 Погода":
         uid_district = user_district.get(uid)
-        if uid_district:
+        if uid_district and uid_district in ODESSA_DISTRICTS:
+            lat, lon = ODESSA_DISTRICTS[uid_district]
             await update.message.reply_text("⏳ Получаю данные...")
-            city = ODESSA_DISTRICTS.get(uid_district, "Odessa,UA")
-            await update.message.reply_text(await get_weather(city), reply_markup=MAIN_MENU)
+            await update.message.reply_text(await get_weather(lat, lon, uid_district), reply_markup=MAIN_MENU)
         else:
-            await update.message.reply_text(
-                "🏙 Выбери свой район Одессы:",
-                reply_markup=districts_keyboard()
-            )
+            await update.message.reply_text("🏙 Выбери свой район Одессы:", reply_markup=districts_keyboard())
         return
 
     # Выбор района
     if text in ODESSA_DISTRICTS:
         user_district[uid] = text
+        lat, lon = ODESSA_DISTRICTS[text]
         await update.message.reply_text("⏳ Получаю данные...")
-        city = ODESSA_DISTRICTS[text]
-        await update.message.reply_text(await get_weather(city), reply_markup=MAIN_MENU)
+        await update.message.reply_text(await get_weather(lat, lon, text), reply_markup=MAIN_MENU)
+        return
+
+    if text == "🔙 Назад":
+        reminder_state.pop(uid, None)
+        await update.message.reply_text("Главное меню:", reply_markup=MAIN_MENU)
         return
 
     # Новости
